@@ -1,65 +1,70 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-// ~5 minutes of spoken text ≈ 900 words.
-// We cap and try to end at a sentence boundary so it sounds natural.
-function trimToMaxWords(s: string, maxWords = 900) {
-  const words = s.trim().split(/\s+/);
-  if (words.length <= maxWords) return s.trim();
-  const trimmed = words.slice(0, maxWords).join(" ");
-  // try to end at the last full sentence within the trimmed chunk
-  const match = trimmed.match(/^[\s\S]*?[.!?](\s|$)/);
-  return (match ? match[0] : trimmed).trim();
+function systemPromptFor(mode: string) {
+  const base =
+    "You are the Get Zen AF Coach. You coach ambitious women/founders to master mindset, regulate their nervous system, and align ambition without burnout. Avoid negative phrasing in subconscious work. Offer concise, compassionate guidance with concrete micro-actions.";
+  const byMode: Record<string, string> = {
+    Ambitious: "Tone: strategic, empowering, direct. Offer weekly CEO rituals and performance routines.",
+    Mom: "Tone: deeply compassionate and time-efficient. Offer micro-rituals (2–5 min) and context-switching support.",
+    Reset: "Tone: calm and regulating. Focus on breath cues, gentle EFT, and nervous-system downshifts."
+  };
+  return `${base}\n${byMode[mode] ?? ""}`;
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const { text, mode } = await req.json();
-
     if (!process.env.OPENAI_API_KEY) {
-      return new Response("Missing OPENAI_API_KEY", { status: 500 });
-    }
-    if (!text || typeof text !== "string") {
-      return new Response("Missing text", { status: 400 });
+      return NextResponse.json({ error: "Missing OPENAI_API_KEY" }, { status: 500 });
     }
 
-    const model = process.env.OPENAI_TTS_MODEL || "tts-1"; // or "tts-1-hd"
-    const voice = process.env.OPENAI_TTS_VOICE || "alloy"; // try "aria","verse","ash" etc.
+    // Parse body safely
+    let body: any = {};
+    try {
+      body = await req.json();
+    } catch {
+      body = {};
+    }
 
-    const trimmedText = trimToMaxWords(text, 900);
+    const mode = body?.mode || "Ambitious";
+    const incoming = Array.isArray(body?.messages) ? body.messages : [];
 
-    // OpenAI Text-to-Speech → MP3
-    const ttsRes = await fetch("https://api.openai.com/v1/audio/speech", {
+    // Ensure messages are in the expected shape
+    const sanitized = incoming
+      .filter((m: any) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant"))
+      .map((m: any) => ({ role: m.role, content: m.content }));
+
+    // If somehow nothing valid came through, still send a tiny prompt
+    const fallbackUser = { role: "user", content: "Give me a short 4-step calming micro-ritual." };
+    const finalMessages = [{ role: "system", content: systemPromptFor(mode) }, ...(sanitized.length ? sanitized : [fallbackUser])];
+
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
       },
       body: JSON.stringify({
-        model,
-        voice,
-        input: trimmedText,
-        format: "mp3",
-      }),
+        model: process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini",
+        temperature: 0.7,
+        messages: finalMessages,
+        max_tokens: 700
+      })
     });
 
-    if (!ttsRes.ok) {
-      const errText = await ttsRes.text();
-      return new Response(errText || "TTS failed", { status: 500 });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error("OpenAI error:", text); // shows up in Vercel Logs
+      // Return 502 so the client shows a friendly retry, but we keep the reason
+      return NextResponse.json({ error: "Upstream error", detail: text }, { status: 502 });
     }
 
-    const mp3ArrayBuffer = await ttsRes.arrayBuffer();
-
-    return new Response(Buffer.from(mp3ArrayBuffer), {
-      status: 200,
-      headers: {
-        "Content-Type": "audio/mpeg",
-        "Content-Disposition": `attachment; filename="get-zen-af-${(mode || "audio").toLowerCase()}.mp3"`,
-        "Cache-Control": "no-store",
-      },
-    });
+    const data = await res.json();
+    const reply = data.choices?.[0]?.message?.content ?? "I couldn’t generate a reply just now.";
+    return NextResponse.json({ reply });
   } catch (e: any) {
-    return new Response(e?.message || "Unexpected error", { status: 500 });
+    console.error("api/chat unexpected:", e?.message || e);
+    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
   }
 }
