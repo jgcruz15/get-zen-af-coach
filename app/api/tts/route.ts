@@ -2,29 +2,43 @@ import { NextRequest } from "next/server";
 
 export const runtime = "nodejs";
 
+// ~5 minutes of spoken text ≈ 900 words
+function trimToMaxWords(s: string, maxWords = 900) {
+  const words = s.trim().split(/\s+/);
+  if (words.length <= maxWords) return s.trim();
+  const trimmed = words.slice(0, maxWords).join(" ");
+  // try to end at a sentence boundary if possible
+  const m = trimmed.match(/[\s\S]*?[.!?](\s|$)/);
+  return m ? m[0].trim() : trimmed.trim();
+}
+
 export async function POST(req: NextRequest) {
   const { text, mode } = await req.json();
 
-  if (!process.env.ELEVEN_API_KEY || !process.env.ELEVEN_VOICE_ID) {
-    return new Response("Missing ELEVEN_API_KEY or ELEVEN_VOICE_ID", { status: 500 });
+  if (!process.env.OPENAI_API_KEY) {
+    return new Response("Missing OPENAI_API_KEY", { status: 500 });
   }
   if (!text || typeof text !== "string") {
     return new Response("Missing text", { status: 400 });
   }
 
-  const voiceId = process.env.ELEVEN_VOICE_ID;
-  const apiKey = process.env.ELEVEN_API_KEY;
+  const model = process.env.OPENAI_TTS_MODEL || "tts-1"; // "tts-1" or "tts-1-hd"
+  const voice = process.env.OPENAI_TTS_VOICE || "alloy"; // try "alloy","verse","ash","aria" etc.
 
-  const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+  const trimmedText = trimToMaxWords(text, 900);
+
+  // OpenAI Text-to-Speech -> MP3
+  const ttsRes = await fetch("https://api.openai.com/v1/audio/speech", {
     method: "POST",
     headers: {
-      "xi-api-key": apiKey,
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      text,
-      model_id: "eleven_multilingual_v2",
-      voice_settings: { stability: 0.3, similarity_boost: 0.9 }
+      model,
+      voice,
+      input: trimmedText,
+      format: "mp3"
     })
   });
 
