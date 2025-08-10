@@ -39,6 +39,11 @@ export async function POST(req: NextRequest) {
     const fallbackUser = { role: "user", content: "Give me a short 4-step calming micro-ritual." };
     const finalMessages = [{ role: "system", content: systemPromptFor(mode) }, ...(sanitized.length ? sanitized : [fallbackUser])];
 
+    // fallbackUser ...
+const finalMessages = [{ role: "system", content: systemPromptFor(mode) }, ...(sanitized.length ? sanitized : [fallbackUser])];
+
+// if (!res.ok) { const text = await res.text(); console.error("OpenAI error:", text); return NextResponse.json({ error: "Upstream error", detail: text }, { status: 502 }); }
+
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
